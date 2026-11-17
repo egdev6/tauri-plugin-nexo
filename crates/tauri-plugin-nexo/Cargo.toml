@@ -1,0 +1,22 @@
+[package]
+name = "tauri-plugin-nexo"
+version = "0.1.0"
+description = "Conditional tray integration for Nexo"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+log = "0.4"
+nexo-protocol = { path = "../nexo-protocol", version = "0.1.0" }
+tauri = { version = "2", default-features = false }
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+tauri = { version = "2", default-features = false, features = ["tray-icon"] }
+tokio = { version = "1", features = ["net"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tauri = { version = "2", default-features = false, features = ["test"] }
+tokio = { version = "1", features = ["test-util"] }

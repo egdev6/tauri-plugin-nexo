@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["crates/nexo-protocol", "crates/tauri-plugin-nexo"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/egdev6/tauri-plugin-nexo"
