@@ -27,6 +27,20 @@ pub(crate) type Connect =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = io::Result<Connection>> + Send>> + Send + Sync>;
 pub(crate) type Job = Box<dyn FnOnce() + Send>;
 
+pub(crate) fn verify_server_user(
+    current_sid: &str,
+    server_sid: io::Result<String>,
+) -> io::Result<()> {
+    if server_sid? == current_sid {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "pipe server user SID does not match",
+        ))
+    }
+}
+
 /// The host's decision for a hub-initiated quit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuitDecision {

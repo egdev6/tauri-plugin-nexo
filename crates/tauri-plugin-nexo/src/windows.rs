@@ -1,4 +1,4 @@
-use std::{io, ptr, sync::Arc};
+use std::{io, os::windows::io::AsRawHandle, ptr, sync::Arc};
 
 use nexo_protocol::{AppInfo, MenuItem, QuitReason, pipe_name};
 use tauri::{
@@ -6,14 +6,19 @@ use tauri::{
     plugin::{Builder, TauriPlugin},
     tray::TrayIcon,
 };
-use tokio::net::windows::named_pipe::ClientOptions;
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, LocalFree},
     Security::{
         Authorization::ConvertSidToStringSidW, GetTokenInformation, TOKEN_QUERY, TOKEN_USER,
         TokenUser,
     },
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
+    System::{
+        Pipes::GetNamedPipeServerProcessId,
+        Threading::{
+            GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    },
 };
 
 use crate::client::{self, Config, Connect, Connection, Handle, Host, Icon, Job, QuitResponder};
@@ -181,17 +186,32 @@ impl<R: Runtime> Host for TauriHost<R> {
     }
 }
 
-fn open(endpoint: &str) -> io::Result<Connection> {
-    ClientOptions::new()
-        .open(endpoint)
-        .map(|pipe| Box::new(pipe) as Connection)
+fn open(endpoint: &str, current_sid: &str) -> io::Result<Connection> {
+    let pipe = ClientOptions::new().open(endpoint)?;
+    client::verify_server_user(current_sid, server_user_sid(&pipe))?;
+    Ok(Box::new(pipe) as Connection)
+}
+
+fn server_user_sid(pipe: &NamedPipeClient) -> io::Result<String> {
+    unsafe {
+        let mut process_id = 0;
+        if GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut process_id) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let process = NativeHandle(process);
+        user_sid(process.0)
+    }
 }
 
 fn production_connector() -> Connect {
     Arc::new(|| {
         Box::pin(async {
             let sid = current_user_sid()?;
-            open(&pipe_name(&sid))
+            open(&pipe_name(&sid), &sid)
         })
     })
 }
@@ -202,12 +222,12 @@ pub(crate) fn test_connector(endpoint: String) -> Connect {
     assert!(endpoint.starts_with(r"\\.\pipe\nexo-test-"));
     Arc::new(move || {
         let endpoint = endpoint.clone();
-        Box::pin(async move { open(&endpoint) })
+        Box::pin(async move { open(&endpoint, &current_user_sid()?) })
     })
 }
 
-struct Token(HANDLE);
-impl Drop for Token {
+struct NativeHandle(HANDLE);
+impl Drop for NativeHandle {
     fn drop(&mut self) {
         unsafe {
             CloseHandle(self.0);
@@ -226,12 +246,16 @@ impl Drop for LocalString {
 /// Return the Windows user SID used for production hub discovery.
 #[doc(hidden)]
 pub fn current_user_sid() -> io::Result<String> {
+    user_sid(unsafe { GetCurrentProcess() })
+}
+
+fn user_sid(process: HANDLE) -> io::Result<String> {
     unsafe {
         let mut raw_token: HANDLE = ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw_token) == 0 {
+        if OpenProcessToken(process, TOKEN_QUERY, &mut raw_token) == 0 {
             return Err(io::Error::last_os_error());
         }
-        let token = Token(raw_token);
+        let token = NativeHandle(raw_token);
         let mut bytes = 0_u32;
         GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut bytes);
         if bytes == 0 {

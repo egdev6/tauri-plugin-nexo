@@ -132,6 +132,14 @@ The pipe is restricted to the current user. Run these steps in a Windows termina
 Each JSON frame is logged with `<-` (app to hub) or `->` (hub to app). `u`, `s`, `q`, `a <id>`,
 `d` and `x` are also printed as help at startup. EOF on stdin exits the fixture.
 
+## Security
+
+Before sending any protocol frames, the Windows client obtains the pipe server's process and token
+user SID and compares it with the current user SID used for discovery. A mismatch or any failure
+to verify closes the connection, falls back to the app's own tray and retries with the usual
+backoff, as if the hub were absent. This verifies the Windows user, not the server executable:
+another process running as the same user can still impersonate the hub.
+
 ## Connection behavior and verification
 
 - Missing pipe: create the normal icon immediately, then retry in the background. The first
