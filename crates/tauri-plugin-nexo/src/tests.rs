@@ -146,9 +146,16 @@ impl FakeHost {
     }
 }
 
+const CURRENT_SID: &str = "S-1-5-21-1000";
+
+struct ScriptedConnection {
+    stream: Connection,
+    server_sid: io::Result<String>,
+}
+
 #[derive(Default)]
 struct ScriptedConnector {
-    streams: Mutex<VecDeque<Connection>>,
+    streams: Mutex<VecDeque<ScriptedConnection>>,
     attempts: Mutex<usize>,
 }
 impl ScriptedConnector {
@@ -156,8 +163,14 @@ impl ScriptedConnector {
         self.add_with_capacity(256 * 1024)
     }
     fn add_with_capacity(&self, capacity: usize) -> Hub {
+        self.add_with_identity(capacity, Ok(CURRENT_SID.into()))
+    }
+    fn add_with_identity(&self, capacity: usize, server_sid: io::Result<String>) -> Hub {
         let (client, server) = tokio::io::duplex(capacity);
-        self.streams.lock().unwrap().push_back(Box::new(client));
+        self.streams.lock().unwrap().push_back(ScriptedConnection {
+            stream: Box::new(client),
+            server_sid,
+        });
         Hub::new(server)
     }
     fn connector(self: &Arc<Self>) -> Connect {
@@ -166,7 +179,10 @@ impl ScriptedConnector {
             *this.attempts.lock().unwrap() += 1;
             let stream = this.streams.lock().unwrap().pop_front();
             Box::pin(async move {
-                stream.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing pipe"))
+                let candidate =
+                    stream.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing pipe"))?;
+                client::verify_server_user(CURRENT_SID, candidate.server_sid)?;
+                Ok(candidate.stream)
             })
         })
     }
@@ -993,6 +1009,96 @@ fn original_noop_init_remains_available() {
     use tauri::plugin::Plugin;
     let plugin = crate::init::<tauri::test::MockRuntime>();
     assert_eq!(plugin.name(), "nexo");
+}
+
+async fn assert_untrusted_server_falls_back(server_sid: io::Result<String>) {
+    let host = Arc::new(FakeHost::default());
+    host.enable_quit.store(true, Ordering::SeqCst);
+    *host.auto_quit.lock().unwrap() = Some(QuitDecision::Accept);
+    let connector = Arc::new(ScriptedConnector::default());
+    let mut untrusted = connector.add_with_identity(256 * 1024, server_sid);
+    let mut replacement = connector.add();
+    let handle = start(&host, &connector);
+    settle().await;
+    host.pump();
+    assert_eq!(host.events(), ["create"]);
+    assert_eq!(*connector.attempts.lock().unwrap(), 1);
+
+    let mut received = String::new();
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_millis(1),
+            untrusted.reader.read_line(&mut received),
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        0,
+        "the untrusted server must not receive a hello"
+    );
+    assert!(received.is_empty());
+    assert!(
+        untrusted
+            .writer
+            .write_all(
+                encode(
+                    1,
+                    &Message::Quit {
+                        id: 1,
+                        reason: QuitReason::User,
+                    },
+                )
+                .unwrap()
+                .as_bytes(),
+            )
+            .await
+            .is_err()
+    );
+    settle().await;
+    host.pump();
+    assert_eq!(host.events(), ["create"]);
+
+    tokio::time::advance(Duration::from_millis(999)).await;
+    settle().await;
+    assert_eq!(*connector.attempts.lock().unwrap(), 1);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    replacement
+        .handshake_with_capabilities(
+            true,
+            &[item("capture")],
+            60_000,
+            vec![Capability::Quit, Capability::Menu],
+        )
+        .await;
+    settle().await;
+    host.pump();
+    assert_eq!(*connector.attempts.lock().unwrap(), 2);
+    assert_eq!(host.events(), ["create", "visible:false"]);
+    handle.shutdown();
+}
+
+#[tokio::test(start_paused = true)]
+async fn different_server_user_is_rejected_and_retries_with_standalone_tray() {
+    assert_untrusted_server_falls_back(Ok("S-1-5-21-2000".into())).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_server_user_lookup_is_rejected_and_retries_with_standalone_tray() {
+    assert_untrusted_server_falls_back(Err(io::Error::other("SID lookup failed"))).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn matching_server_user_connects_without_creating_a_tray() {
+    let host = Arc::new(FakeHost::default());
+    let connector = Arc::new(ScriptedConnector::default());
+    let mut hub = connector.add_with_identity(256 * 1024, Ok(CURRENT_SID.into()));
+    let handle = start(&host, &connector);
+    hub.handshake(true, &[item("capture")]).await;
+    settle().await;
+    host.pump();
+    assert!(host.events().is_empty());
+    assert_eq!(*connector.attempts.lock().unwrap(), 1);
+    handle.shutdown();
 }
 
 #[tokio::test(start_paused = true)]

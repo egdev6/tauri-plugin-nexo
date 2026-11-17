@@ -46,8 +46,11 @@ pipe name.
 - The hub creates the first instance with `FILE_FLAG_FIRST_PIPE_INSTANCE`. If that fails, another
   hub already runs for this user and the new one exits.
 - The pipe's security descriptor grants access to the current user only.
-- If the pipe does not exist, the app runs **standalone**: it creates its own tray icon, exactly as
-  it does today, and retries the connection in the background (see §6).
+- Before sending `hello`, the app obtains the pipe server's process ID and token user SID and
+  compares it with its own user SID used for discovery. If they differ, or any verification step
+  fails, it closes the connection and treats the hub as absent.
+- If the pipe does not exist or the server cannot be verified, the app runs **standalone**: it
+  creates its own tray icon, exactly as it does today, and retries in the background (see §6).
 
 **Framing.** Each message is one UTF-8 JSON object on a single line, ended by `\n`
 (newline-delimited JSON). A line is at most **64 KiB**; a longer line is a protocol error and the
@@ -298,7 +301,9 @@ behind.
 
 ## 9. Security notes
 
-- The pipe is accessible to the current user only. Other users on the same machine cannot connect.
+- The hub restricts its pipe to the current user, and the app verifies the server process token's
+  user SID before exchanging protocol messages. The check does not authenticate the executable;
+  another process running as the same user can still impersonate the hub.
 - Any process of the same user could claim to be another app by sending its `app.id`. v1 accepts
   this risk: such a process could already act as that user. Optional hardening for later: the hub
   reads the client's process id (`GetNamedPipeClientProcessId`) and checks that its executable path
