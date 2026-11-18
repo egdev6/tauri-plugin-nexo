@@ -15,7 +15,7 @@ This repository contains two crates:
 
 ```toml
 [target.'cfg(windows)'.dependencies]
-tauri-plugin-nexo = { git = "https://github.com/egdev6/tauri-plugin-nexo", tag = "v0.1.0" }
+tauri-plugin-nexo = { git = "https://github.com/egdev6/tauri-plugin-nexo", tag = "v0.1.1" }
 ```
 
 Setup, API and the manual check with the simulated hub are in the [plugin README](crates/tauri-plugin-nexo/README.md).
